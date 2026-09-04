@@ -46,7 +46,7 @@ func runWatch(ctx context.Context, args []string) error {
 	// Seed the store with processes that already exist, so events from
 	// long-lived processes (shells, browsers) can be attributed to a named
 	// process instead of a bare pid we never saw start.
-	if snapshot, err := procscan.Snapshot(os.Getpid()); err != nil {
+	if snapshot, err := procscan.Snapshot(uint32(os.Getpid())); err != nil {
 		fmt.Fprintln(os.Stderr, "provctl: /proc snapshot failed, pre-existing processes will show as bare pids:", err)
 	} else if err := st.Seed(snapshot); err != nil {
 		return fmt.Errorf("cli: seed store from /proc: %w", err)

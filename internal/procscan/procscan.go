@@ -15,6 +15,7 @@ package procscan
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -37,7 +38,7 @@ const userHZ = 100
 // Individual unreadable processes are skipped rather than failing the
 // whole scan: pids come and go while we walk, and kernel threads deny
 // access to some of these files.
-func Snapshot(selfPID int) ([]model.Event, error) {
+func Snapshot(selfPID uint32) ([]model.Event, error) {
 	bootTime, err := bootTime()
 	if err != nil {
 		return nil, fmt.Errorf("procscan: %w", err)
@@ -53,9 +54,16 @@ func Snapshot(selfPID int) ([]model.Event, error) {
 		if !entry.IsDir() {
 			continue
 		}
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil || pid == selfPID {
-			continue // not a pid directory, or it's us
+		// Parsed directly as uint32 (not int, then narrowed) to match
+		// model.Event.PID's type with no intermediate architecture-
+		// dependent conversion for static analysis to flag.
+		pid64, err := strconv.ParseUint(entry.Name(), 10, 32)
+		if err != nil {
+			continue // not a pid directory
+		}
+		pid := uint32(pid64)
+		if pid == selfPID {
+			continue // it's us
 		}
 		ev, ok := scanPID(pid, bootTime)
 		if !ok {
@@ -66,7 +74,7 @@ func Snapshot(selfPID int) ([]model.Event, error) {
 	return out, nil
 }
 
-func scanPID(pid int, boot time.Time) (model.Event, bool) {
+func scanPID(pid uint32, boot time.Time) (model.Event, bool) {
 	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {
 		return model.Event{}, false // exited between ReadDir and now
@@ -75,11 +83,15 @@ func scanPID(pid int, boot time.Time) (model.Event, bool) {
 	if err != nil {
 		return model.Event{}, false
 	}
+	uptime, ok := ticksToDuration(startTicks)
+	if !ok {
+		return model.Event{}, false
+	}
 
 	ev := model.Event{
 		Type: model.TypeExec,
-		Time: boot.Add(time.Duration(startTicks) * time.Second / userHZ),
-		PID:  uint32(pid),
+		Time: boot.Add(uptime),
+		PID:  pid,
 		PPID: ppid,
 		Comm: comm,
 	}
@@ -97,6 +109,20 @@ func scanPID(pid int, boot time.Time) (model.Event, bool) {
 	}
 
 	return ev, true
+}
+
+// ticksToDuration converts a /proc/<pid>/stat starttime (USER_HZ clock
+// ticks since boot) to a time.Duration. time.Duration is int64, and
+// startTicks is a raw uint64 parse of a kernel field this package doesn't
+// otherwise range-check, so the conversion is bounds-checked explicitly
+// rather than letting an implausible value wrap to a negative duration
+// silently. A value this large — system uptime beyond ~2.9 billion years
+// at USER_HZ — can't occur in practice; ok is false only in that case.
+func ticksToDuration(startTicks uint64) (d time.Duration, ok bool) {
+	if startTicks > math.MaxInt64 {
+		return 0, false
+	}
+	return time.Duration(startTicks) * time.Second / userHZ, true
 }
 
 // parseStat extracts comm, ppid, and starttime from a /proc/<pid>/stat

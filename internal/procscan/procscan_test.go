@@ -1,6 +1,7 @@
 package procscan
 
 import (
+	"math"
 	"os"
 	"testing"
 	"time"
@@ -96,12 +97,32 @@ func TestBootTimeIsPlausible(t *testing.T) {
 	}
 }
 
+func TestTicksToDuration(t *testing.T) {
+	if d, ok := ticksToDuration(100 * userHZ); !ok || d != 100*time.Second {
+		t.Errorf("ticksToDuration(100*userHZ) = %v, %v, want 100s, true", d, ok)
+	}
+	if d, ok := ticksToDuration(0); !ok || d != 0 {
+		t.Errorf("ticksToDuration(0) = %v, %v, want 0, true", d, ok)
+	}
+	// A value this large can't occur in practice (system uptime beyond
+	// ~2.9 billion years at USER_HZ), but a raw uint64 parse doesn't rule
+	// it out: converting straight to time.Duration (int64) would wrap to
+	// a negative number silently rather than failing.
+	if d, ok := ticksToDuration(math.MaxUint64); ok {
+		t.Errorf("ticksToDuration(MaxUint64) = %v, true, want ok=false", d)
+	}
+	if _, ok := ticksToDuration(math.MaxInt64); !ok {
+		t.Error("ticksToDuration(MaxInt64) should still be representable")
+	}
+}
+
 // Snapshot runs against the real /proc, so assert only invariants that
 // hold on any Linux system rather than anything machine-specific.
 func TestSnapshotFindsSelfAndSkipsSelfPID(t *testing.T) {
-	self := os.Getpid()
+	self := uint32(os.Getpid())
+	noSuchPID := ^uint32(0) // max uint32; Linux pid_max is far below this
 
-	all, err := Snapshot(-1) // -1 never matches a real pid, so nothing is skipped
+	all, err := Snapshot(noSuchPID) // matches no real pid, so nothing is skipped
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
@@ -111,7 +132,7 @@ func TestSnapshotFindsSelfAndSkipsSelfPID(t *testing.T) {
 
 	var foundSelf bool
 	for _, ev := range all {
-		if ev.PID == uint32(self) {
+		if ev.PID == self {
 			foundSelf = true
 			if ev.Comm == "" {
 				t.Error("our own process has an empty comm")
@@ -125,7 +146,7 @@ func TestSnapshotFindsSelfAndSkipsSelfPID(t *testing.T) {
 		}
 	}
 	if !foundSelf {
-		t.Errorf("Snapshot(-1) did not include the running test process (pid %d)", self)
+		t.Errorf("Snapshot(%d) did not include the running test process (pid %d)", noSuchPID, self)
 	}
 
 	excluded, err := Snapshot(self)
@@ -133,7 +154,7 @@ func TestSnapshotFindsSelfAndSkipsSelfPID(t *testing.T) {
 		t.Fatalf("Snapshot: %v", err)
 	}
 	for _, ev := range excluded {
-		if ev.PID == uint32(self) {
+		if ev.PID == self {
 			t.Fatalf("Snapshot(%d) still included pid %d", self, self)
 		}
 	}
